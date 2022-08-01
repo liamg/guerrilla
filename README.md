@@ -6,7 +6,7 @@ Create a temporary email address in the terminal to quickly sign up for services
 
 ![Screenshot of Guerrilla command-line receiving emails](/images/screenshot.png)
 
-Built based on the [API documention](https://docs.google.com/document/d/1Qw5KQP1j57BPTDmms5nspe-QAjNEsNg8cQHpAAycYNM/edit?hl=en).
+Built based on the [official API documention](https://docs.google.com/document/d/1Qw5KQP1j57BPTDmms5nspe-QAjNEsNg8cQHpAAycYNM/edit?hl=en).
 
 ## Usage: CLI
 
