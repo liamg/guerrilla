@@ -1,91 +1,242 @@
 package guerrilla
 
 import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "time"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
 )
 
+type Client interface {
+	GetAllEmails() ([]EmailSummary, error)
+	GetNewEmails() ([]EmailSummary, error)
+	GetEmail(id int) (*Email, error)
+}
+
+type EmailSummary struct {
+	Att           int    `json:"att"`
+	MailDate      string `json:"mail_date"`
+	MailExcerpt   string `json:"mail_excerpt"`
+	MailFrom      string `json:"mail_from"`
+	MailID        int    `json:"mail_id"`
+	MailRead      int    `json:"mail_read"`
+	MailSubject   string `json:"mail_subject"`
+	MailTimestamp int    `json:"mail_timestamp"`
+}
+
+type Email struct {
+	MailFrom      string `json:"mail_from"`
+	MailTimestamp int    `json:"mail_timestamp"`
+	MailRead      int    `json:"mail_read"`
+	MailDate      string `json:"mail_date"`
+	ReplyTo       string `json:"reply_to"`
+	MailSubject   string `json:"mail_subject"`
+	MailExcerpt   string `json:"mail_excerpt"`
+	MailID        int    `json:"mail_id"`
+	Att           int    `json:"att"`
+	ContentType   string `json:"content_type"`
+	MailRecipient string `json:"mail_recipient"`
+	SourceID      int    `json:"source_id"`
+	SourceMailID  int    `json:"source_mail_id"`
+	MailBody      string `json:"mail_body"`
+	Size          int    `json:"size"`
+	RefMid        string `json:"ref_mid"`
+}
+
+var _ Client = (*client)(nil)
+
 type client struct {
-    inner    *http.Client
-    endpoint string
-    agent    string
-    language string
-    token    string
+	inner    *http.Client
+	endpoint string
+	agent    string
+	language string
+	session  session
+}
+
+type session struct {
+	token   string
+	email   string
+	lastSeq int
 }
 
 var DefaultClient = client{
-    inner: &http.Client{
-        Timeout: time.Second * 10,
-    },
-    endpoint: "https://api.guerrillamail.com/ajax.php",
-    agent:    "https://github.com/liamg/guerrilla",
-    language: "en",
+	inner: &http.Client{
+		Timeout: time.Second * 10,
+	},
+	endpoint: "https://api.guerrillamail.com/ajax.php",
+	agent:    "https://github.com/liamg/guerrilla",
+	language: "en",
 }
 
-func New(options ...Option) *client {
-    client := DefaultClient
-    for _, option := range options {
-        option(&client)
-    }
-    return &client
+func Init(options ...Option) (Client, error) {
+	client := DefaultClient
+	for _, option := range options {
+		option(&client)
+	}
+	if err := client.init(); err != nil {
+		return nil, err
+	}
+	return &client, nil
 }
 
 const (
-    methodGetEmailAddress = "get_email_address"
-    methodGetEmailList    = "get_email_list"
-    methodCheckEmail      = "check_email"
+	methodGetEmailAddress = "get_email_address"
+	methodGetEmailList    = "get_email_list"
+	methodCheckEmail      = "check_email"
 )
 
 func (c *client) sendRequest(function string, params map[string]string, target interface{}) error {
 
-    req, err := http.NewRequest(http.MethodGet, c.endpoaint, nil)
-    if err != nil {
-        return err
-    }
+	req, err := http.NewRequest(http.MethodGet, c.endpoint, nil)
+	if err != nil {
+		return err
+	}
 
-    query := req.URL.Query()
-    for key, value := range params {
-        query.Set(key, value)
-    }
-    query.Set("f", function)
-    query.Set("agent", c.agent)
-    req.URL.RawQuery = query.Encode()
+	query := req.URL.Query()
+	for key, value := range params {
+		query.Set(key, value)
+	}
+	query.Set("f", function)
+	query.Set("agent", c.agent)
+	if c.session.token != "" {
+		query.Set("sid_token", c.session.token)
+	}
+	req.URL.RawQuery = query.Encode()
+	fmt.Println(req.URL.String())
 
-    req.Header.Set("Accept", "application/json")
-    resp, err := c.inner.Do(req)
-    if err != nil {
-        return err
-    }
-    defer func() { _ = resp.Body.Close() }()
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.inner.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
 
-    if resp.StatusCode >= 400 {
-        return fmt.Errorf("request failed with status code %d", resp.StatusCode)
-    }
-    if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-        return err
-    }
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("request failed with status code %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return err
+	}
 
-    return nil
+	return nil
 }
 
 type getEmailAddressResponse struct {
-    EmailAddr      string `json:"email_addr"`
-    EmailTimestamp int    `json:"email_timestamp"`
-    Alias          string `json:"alias"`
-    AliasError     string `json:"alias_error"`
-    SidToken       string `json:"sid_token"`
+	EmailAddr      string `json:"email_addr"`
+	EmailTimestamp int    `json:"email_timestamp"`
+	Alias          string `json:"alias"`
+	AliasError     string `json:"alias_error"`
+	SidToken       string `json:"sid_token"`
 }
 
-func (c *client) GetEmailAddress() (string, error) {
-    var resp getEmailAddressResponse
-    if err := c.sendRequest(methodGetEmailAddress, map[string]string{
-        "lang":      c.language,
-        "sid_token": c.token,
-    }, &resp); err != nil {
-        return "", err
-    }
-    c.token = resp.SidToken
-    return resp.EmailAddr, nil
+func (c *client) init() error {
+	var resp getEmailAddressResponse
+	if err := c.sendRequest(methodGetEmailAddress, map[string]string{
+		"lang": c.language,
+	}, &resp); err != nil {
+		return err
+	}
+	c.session = session{
+		token: resp.SidToken,
+		email: resp.EmailAddr,
+	}
+	return nil
+}
+
+type getEmailListResponse struct {
+	Alias    string         `json:"alias"`
+	Count    string         `json:"count"`
+	Email    string         `json:"email"`
+	List     []EmailSummary `json:"list"`
+	SidToken string         `json:"sid_token"`
+	Stats    struct {
+		CreatedAddresses int    `json:"created_addresses"`
+		ReceivedEmails   string `json:"received_emails"`
+		SequenceMail     string `json:"sequence_mail"`
+		Total            string `json:"total"`
+		TotalPerHour     string `json:"total_per_hour"`
+	} `json:"stats"`
+}
+
+func (c *client) GetAllEmails() ([]EmailSummary, error) {
+	var offset int
+	var emails []EmailSummary
+	for {
+		var resp getEmailListResponse
+		if err := c.sendRequest("get_email_list", map[string]string{
+			"offset": strconv.Itoa(offset),
+		}, &resp); err != nil {
+			return nil, err
+		}
+		count, err := strconv.Atoi(resp.Count)
+		if err != nil {
+			return nil, err
+		}
+		emails = append(emails, resp.List...)
+		if len(emails) >= count || len(resp.List) == 0 {
+			break
+		}
+	}
+	if len(emails) > 0 {
+		c.session.lastSeq = emails[len(emails)-1].MailID
+	}
+	return emails, nil
+}
+
+type checkEmailResponse struct {
+	List     []EmailSummary `json:"list"`
+	Count    string         `json:"count"`
+	Email    string         `json:"email"`
+	Alias    string         `json:"alias"`
+	Ts       int            `json:"ts"`
+	SidToken string         `json:"sid_token"`
+	Stats    struct {
+		SequenceMail     string `json:"sequence_mail"`
+		CreatedAddresses int    `json:"created_addresses"`
+		ReceivedEmails   string `json:"received_emails"`
+		Total            string `json:"total"`
+		TotalPerHour     string `json:"total_per_hour"`
+	} `json:"stats"`
+	Auth struct {
+		Success    bool          `json:"success"`
+		ErrorCodes []interface{} `json:"error_codes"`
+	} `json:"auth"`
+}
+
+func (c *client) GetNewEmails() ([]EmailSummary, error) {
+	var emails []EmailSummary
+	for {
+		var resp checkEmailResponse
+		if err := c.sendRequest("check_email", map[string]string{
+			"seq": strconv.Itoa(c.session.lastSeq),
+		}, &resp); err != nil {
+			return nil, err
+		}
+		count, err := strconv.Atoi(resp.Count)
+		if err != nil {
+			return nil, err
+		}
+		emails = append(emails, resp.List...)
+		if len(emails) > 0 {
+			c.session.lastSeq = emails[len(emails)-1].MailID
+		}
+		if len(emails) >= count || len(resp.List) == 0 {
+			break
+		}
+	}
+	return emails, nil
+}
+
+type fetchEmailResponse Email
+
+func (c *client) GetEmail(id int) (*Email, error) {
+	var resp fetchEmailResponse
+	if err := c.sendRequest("fetch_email", map[string]string{
+		"email_id": strconv.Itoa(id),
+	}, &resp); err != nil {
+		return nil, err
+	}
+	email := Email(resp)
+	return &email, nil
 }

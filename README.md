@@ -15,3 +15,13 @@ Built based on the [API documention](https://docs.google.com/document/d/1Qw5KQP1
 ## Usage: Go Module
 
 
+## TODO
+
+- Better examples
+- Link replacement
+- Attachments
+- CLI
+- Tests
+- Screenshots
+- GoDoc
+- Social image
