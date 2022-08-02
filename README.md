@@ -1,4 +1,4 @@
-# guerrilla
+# :incoming_envelope::bust_in_silhouette: guerrilla
 
 A command-line tool (and Go module) for [https://www.guerrillamail.com/](https://www.guerrillamail.com/).
 
