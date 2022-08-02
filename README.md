@@ -44,8 +44,3 @@ func main() {
     }
 }
 ```
-
-## TODO
-
-- Link replacement
-- Social image
