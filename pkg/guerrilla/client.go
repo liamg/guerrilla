@@ -5,43 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Client interface {
 	GetAllEmails() ([]EmailSummary, error)
 	GetNewEmails() ([]EmailSummary, error)
-	GetEmail(id int) (*Email, error)
-}
-
-type EmailSummary struct {
-	Att           int    `json:"att"`
-	MailDate      string `json:"mail_date"`
-	MailExcerpt   string `json:"mail_excerpt"`
-	MailFrom      string `json:"mail_from"`
-	MailID        int    `json:"mail_id"`
-	MailRead      int    `json:"mail_read"`
-	MailSubject   string `json:"mail_subject"`
-	MailTimestamp int    `json:"mail_timestamp"`
-}
-
-type Email struct {
-	MailFrom      string `json:"mail_from"`
-	MailTimestamp int    `json:"mail_timestamp"`
-	MailRead      int    `json:"mail_read"`
-	MailDate      string `json:"mail_date"`
-	ReplyTo       string `json:"reply_to"`
-	MailSubject   string `json:"mail_subject"`
-	MailExcerpt   string `json:"mail_excerpt"`
-	MailID        int    `json:"mail_id"`
-	Att           int    `json:"att"`
-	ContentType   string `json:"content_type"`
-	MailRecipient string `json:"mail_recipient"`
-	SourceID      int    `json:"source_id"`
-	SourceMailID  int    `json:"source_mail_id"`
-	MailBody      string `json:"mail_body"`
-	Size          int    `json:"size"`
-	RefMid        string `json:"ref_mid"`
+	GetEmail(id string) (*Email, error)
+	GetAddress() string
 }
 
 var _ Client = (*client)(nil)
@@ -57,7 +29,7 @@ type client struct {
 type session struct {
 	token   string
 	email   string
-	lastSeq int
+	lastSeq string
 }
 
 var DefaultClient = client{
@@ -103,7 +75,6 @@ func (c *client) sendRequest(function string, params map[string]string, target i
 		query.Set("sid_token", c.session.token)
 	}
 	req.URL.RawQuery = query.Encode()
-	fmt.Println(req.URL.String())
 
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.inner.Do(req)
@@ -139,17 +110,17 @@ func (c *client) init() error {
 	}
 	c.session = session{
 		token: resp.SidToken,
-		email: resp.EmailAddr,
+		email: strings.TrimSpace(resp.EmailAddr),
 	}
 	return nil
 }
 
 type getEmailListResponse struct {
-	Alias    string         `json:"alias"`
-	Count    string         `json:"count"`
-	Email    string         `json:"email"`
-	List     []EmailSummary `json:"list"`
-	SidToken string         `json:"sid_token"`
+	Alias    string            `json:"alias"`
+	Count    string            `json:"count"`
+	Email    string            `json:"email"`
+	List     []apiEmailSummary `json:"list"`
+	SidToken string            `json:"sid_token"`
 	Stats    struct {
 		CreatedAddresses int    `json:"created_addresses"`
 		ReceivedEmails   string `json:"received_emails"`
@@ -173,35 +144,33 @@ func (c *client) GetAllEmails() ([]EmailSummary, error) {
 		if err != nil {
 			return nil, err
 		}
-		emails = append(emails, resp.List...)
+		for _, email := range resp.List {
+			emails = append(emails, email.Summary())
+		}
 		if len(emails) >= count || len(resp.List) == 0 {
 			break
 		}
 	}
 	if len(emails) > 0 {
-		c.session.lastSeq = emails[len(emails)-1].MailID
+		c.session.lastSeq = emails[len(emails)-1].ID
 	}
 	return emails, nil
 }
 
 type checkEmailResponse struct {
-	List     []EmailSummary `json:"list"`
-	Count    string         `json:"count"`
-	Email    string         `json:"email"`
-	Alias    string         `json:"alias"`
-	Ts       int            `json:"ts"`
-	SidToken string         `json:"sid_token"`
+	List     []apiEmailSummary `json:"list"`
+	Count    vagueType         `json:"count"`
+	Email    string            `json:"email"`
+	Alias    string            `json:"alias"`
+	Ts       vagueType         `json:"ts"`
+	SidToken string            `json:"sid_token"`
 	Stats    struct {
-		SequenceMail     string `json:"sequence_mail"`
-		CreatedAddresses int    `json:"created_addresses"`
-		ReceivedEmails   string `json:"received_emails"`
-		Total            string `json:"total"`
-		TotalPerHour     string `json:"total_per_hour"`
+		SequenceMail     vagueType `json:"sequence_mail"`
+		CreatedAddresses vagueType `json:"created_addresses"`
+		ReceivedEmails   vagueType `json:"received_emails"`
+		Total            vagueType `json:"total"`
+		TotalPerHour     vagueType `json:"total_per_hour"`
 	} `json:"stats"`
-	Auth struct {
-		Success    bool          `json:"success"`
-		ErrorCodes []interface{} `json:"error_codes"`
-	} `json:"auth"`
 }
 
 func (c *client) GetNewEmails() ([]EmailSummary, error) {
@@ -209,17 +178,16 @@ func (c *client) GetNewEmails() ([]EmailSummary, error) {
 	for {
 		var resp checkEmailResponse
 		if err := c.sendRequest("check_email", map[string]string{
-			"seq": strconv.Itoa(c.session.lastSeq),
+			"seq": c.session.lastSeq,
 		}, &resp); err != nil {
 			return nil, err
 		}
-		count, err := strconv.Atoi(resp.Count)
-		if err != nil {
-			return nil, err
+		count := resp.Count.Int()
+		for _, email := range resp.List {
+			emails = append(emails, email.Summary())
 		}
-		emails = append(emails, resp.List...)
-		if len(emails) > 0 {
-			c.session.lastSeq = emails[len(emails)-1].MailID
+		if len(resp.List) > 0 {
+			c.session.lastSeq = resp.List[len(resp.List)-1].ID.String()
 		}
 		if len(emails) >= count || len(resp.List) == 0 {
 			break
@@ -228,15 +196,17 @@ func (c *client) GetNewEmails() ([]EmailSummary, error) {
 	return emails, nil
 }
 
-type fetchEmailResponse Email
-
-func (c *client) GetEmail(id int) (*Email, error) {
-	var resp fetchEmailResponse
+func (c *client) GetEmail(id string) (*Email, error) {
+	var resp apiEmail
 	if err := c.sendRequest("fetch_email", map[string]string{
-		"email_id": strconv.Itoa(id),
+		"email_id": id,
 	}, &resp); err != nil {
 		return nil, err
 	}
-	email := Email(resp)
+	email := resp.Email()
 	return &email, nil
+}
+
+func (c *client) GetAddress() string {
+	return c.session.email
 }
